@@ -1,10 +1,9 @@
 import telebot
 from telebot import types
-from settings import TOKEN, ADMINS, NA_PARE, COMMANDS, user_states, RADIUS, saved_point
+from settings import BOT_TOKEN, ADMINS, NA_PARE, COMMANDS, user_states, RADIUS, saved_point # ПЕРЕДЕЛАТЬ ИМПОРТЫ
 from messages import welcome_text, about_text, help_text, response_text, location_text
 from geopos import is_in_radius_meters
 
-BOT_TOKEN = TOKEN
 bot = telebot.TeleBot(BOT_TOKEN)
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -74,17 +73,17 @@ def button_about(message):
 
 
 @bot.message_handler(func=lambda message: message.text == '📕 Спрятать журнал')
-def set_point_command(message):
+def hide_journal(message):
     if message.from_user.id in ADMINS:
         user_id = message.from_user.id
         global saved_point
         saved_point = None
-        user_states[user_id] = 'waiting_for_point'
+        user_states[user_id] = None
         bot.send_message(message.chat.id, "Журнал закртыт, жду следующего открытия")
     else: bot.send_message(message.chat.id, "Вы не староста!")
 
 @bot.message_handler(func=lambda message: message.text == '📗 Достать журнал')
-def set_point_command(message):
+def get_journal(message):
     if message.from_user.id in ADMINS:
         user_id = message.from_user.id
         user_states[user_id] = 'waiting_for_point'
@@ -117,7 +116,7 @@ def handle_location(message):
     if hasattr(message.location, 'live_period') and message.location.live_period is not None:
         bot.send_message(message.chat.id, f"✅ Это живая геолокация! Время жизни: {message.location.live_period} секунд")
         
-        # Проверяем нахождение в радиусе
+        # Проверяем нахождение в радиусе ПЕРЕДЕЛАТЬ
         if is_in_radius_meters(saved_point['latitude'], saved_point['longitude'], 
                              message.location.latitude, message.location.longitude, RADIUS):
             if str(message.chat.id) not in NA_PARE:
