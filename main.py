@@ -1,7 +1,7 @@
 import telebot
 from telebot import types
 from settings import BOT_TOKEN, ADMINS, COMMANDS, user_states, RADIUS, saved_point
-from messages import welcome_text, about_text, help_text, response_text, location_text, registration_notice
+from messages import welcome_text, about_text, help_text, response_text, location_text, registration_notice, reg_text, not_true_fio,true_fio, not_true_group
 from geopos import is_in_radius_meters
 from db_init import StudentDB
 import datetime
@@ -13,6 +13,10 @@ bot = telebot.TeleBot(BOT_TOKEN)
 def is_registered(user_id):
     """Проверяет, зарегистрирован ли пользователь"""
     return db.get_student(str(user_id)) is not None
+
+def is_journal_active():
+    """Проверяет, активен ли журнал (установлена ли точка)"""
+    return saved_point is not None
 
 def get_keyboard(chat_id):
     """Возвращает клавиатуру в зависимости от статуса пользователя"""
@@ -52,11 +56,7 @@ def register_user(message):
         return
     
     user_states[user_id] = 'waiting_for_name'
-    bot.send_message(message.chat.id, 
-                    "📝 *Регистрация студента*\n\n"
-                    "Введите ваше *Имя и Фамилию* через пробел:\n"
-                    "Например: *Иван Иванов*", 
-                    parse_mode='Markdown')
+    bot.send_message(message.chat.id, reg_text, parse_mode='Markdown')
 
 @bot.message_handler(func=lambda message: user_states.get(str(message.from_user.id)) == 'waiting_for_name')
 def process_name(message):
@@ -66,33 +66,27 @@ def process_name(message):
     # Валидация имени и фамилии
     name_parts = full_name.split()
     if len(name_parts) < 2:
-        bot.send_message(message.chat.id, 
-                        "❌ Пожалуйста, введите *Имя и Фамилию* через пробел:\n"
-                        "Например: *Иван Иванов*", 
-                        parse_mode='Markdown')
+        bot.send_message(message.chat.id, not_true_fio, parse_mode='Markdown')
         return
     
     # Сохраняем имя и переходим к вводу группы
     user_states[user_id] = 'waiting_for_group'
     user_states[f'{user_id}_name'] = full_name  # Временно сохраняем имя
     
-    bot.send_message(message.chat.id,
-                    "✅ Имя сохранено!\n\n"
-                    "Теперь введите вашу *группу*:\n"
-                    "Например: *ИТ-21* или *КБ-31*",
+    bot.send_message(message.chat.id, true_fio,
                     parse_mode='Markdown')
 
 @bot.message_handler(func=lambda message: user_states.get(str(message.from_user.id)) == 'waiting_for_group')
 def process_group(message):
     user_id = str(message.from_user.id)
-    group_name = message.text.strip()
+    group_name = message.text.strip().upper()  # Приводим к верхнему регистру
     
-    # Валидация группы
-    if len(group_name) < 2:
-        bot.send_message(message.chat.id, 
-                        "❌ Пожалуйста, введите корректное название группы:\n"
-                        "Например: *ИТ-21* или *КБ-31*", 
-                        parse_mode='Markdown')
+    # Валидация группы: только русские буквы, цифры и тире
+    import re
+    group_pattern = re.compile(r'^[А-ЯЁ]{1,5}-\d{1,5}$')
+    
+    if not group_pattern.match(group_name):
+        bot.send_message(message.chat.id, not_true_group, parse_mode='Markdown')
         return
     
     # Получаем сохраненное имя
@@ -202,6 +196,11 @@ def otmetica(message):
         bot.send_message(message.chat.id, "❌ Сначала зарегистрируйтесь с помощью кнопки '👤 Зарегистрироваться'")
         return
     
+    # Проверяем, активен ли журнал
+    if not is_journal_active():
+        bot.send_message(message.chat.id, "❌ Журнал сейчас закрыт. Подождите, пока староста откроет журнал для отметки.")
+        return
+    
     # Проверяем, не отметился ли уже
     current_attendance = db.get_current_attendance()
     current_user_ids = [student['user_id'] for student in current_attendance]
@@ -226,8 +225,54 @@ def hide_journal(message):
         return
         
     if message.from_user.id in ADMINS:
+        # Получаем итоговую статистику перед очисткой
+        all_students = db.get_all_students()
+        current_attendance = db.get_current_attendance()
+        current_user_ids = [student['user_id'] for student in current_attendance]
+        
+        # Формируем итоговый отчет
+        if all_students:
+            # Группируем по группам
+            groups = {}
+            for student in all_students:
+                group = student['group_name']
+                if group not in groups:
+                    groups[group] = []
+                groups[group].append(student)
+            
+            final_report = "📊 *Итоговый отчет по паре*\n\n"
+            
+            for group_name, students in sorted(groups.items()):
+                final_report += f"👥 *{group_name}:*\n"
+                
+                # Сначала те, кто отметился
+                present_students = [s for s in students if s['user_id'] in current_user_ids]
+                absent_students = [s for s in students if s['user_id'] not in current_user_ids]
+                
+                for student in sorted(present_students, key=lambda x: x['full_name']):
+                    final_report += f"   ✅ {student['full_name']}\n"
+                
+                for student in sorted(absent_students, key=lambda x: x['full_name']):
+                    final_report += f"   ❌ {student['full_name']}\n"
+                
+                # Статистика по группе
+                group_present = len(present_students)
+                group_total = len(students)
+                final_report += f"   📊 {group_present}/{group_total}\n\n"
+            
+            # Общая статистика
+            present_count = len(current_attendance)
+            total_count = len(all_students)
+            final_report += f"📋 *Итого отметилось:* {present_count}/{total_count}"
+            
+            # Отправляем итоговый отчет
+            bot.send_message(message.chat.id, final_report, parse_mode='Markdown')
+        
+        # Очищаем журнал
         if db.clear_current_class():
-            bot.send_message(message.chat.id, "✅ Журнал очищен, все студенты удалены из текущей пары")
+            global saved_point
+            saved_point = None
+            bot.send_message(message.chat.id, "✅ Журнал закрыт и очищен. Все студенты удалены из текущей пары.")
         else:
             bot.send_message(message.chat.id, "❌ Ошибка при очистке журнала")
     else:
@@ -269,8 +314,8 @@ def handle_location(message):
         return
 
     # Проверка для студентов - отметка на паре
-    if saved_point is None:
-        bot.send_message(message.chat.id, "📍 Точка для отметки не установлена. Обратитесь к старосте!")
+    if not is_journal_active():
+        bot.send_message(message.chat.id, "❌ Журнал сейчас закрыт. Подождите, пока староста откроет журнал для отметки.")
         return
 
     # Проверяем, не отметился ли уже студент на текущей паре
